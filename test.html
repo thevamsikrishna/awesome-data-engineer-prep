@@ -1,4 +1,4 @@
-Before I lay out the full flow changes, I need to pin down one design decision — it changes how the last part is built.
+iBefore I lay out the full flow changes, I need to pin down one design decision — it changes how the last part is built.
 
 Got it — simpler than I first thought: no new table, just populate the existing **Incident** column by matching SI ↔ Application. Here's the complete build, in order.
 
@@ -115,3 +115,61 @@ Add this right before the final `'</tr>')}` in your existing concat, after the S
 For each Application row, it looks up whether any incident's **Service item (SI)** (case-insensitive) matches that **Applications** name. If yes, it lists all deduplicated incident numbers for that SI, comma-separated (e.g., `INC9062894, INC9061550` if an app happened to have two). If no match, it shows `NA`.
 
 Let me know once you've added these steps and tell me if the "List rows present in a table" step finds a table in the attachment — if it errors out saying no table found, that confirms we need the Office Script fallback for reading raw cell ranges instead.
+
+
+
+
+That "No items / Enter custom value" in the Table dropdown means the file has data but **no defined Excel Table object** — which is exactly the caveat I flagged earlier. ServiceNow's attachment is just plain cells with headers, not a formatted Table, so `List rows present in a table` has nothing to reference yet.
+
+## Fix — auto-create a table with an Office Script, right after "Create file"
+
+### Step A: Insert a new action between "Create file" and "List rows present in a table"
+
+Search for **"Run script"** (Excel Online Business connector) and add it.
+
+### Step B: Create the Office Script first
+
+Before configuring "Run script" in the flow, you need the script itself saved in Excel Online:
+
+1. Open **Excel on the web** (office.com → Excel).
+2. Open any workbook → go to **Automate** tab → **New Script**.
+3. Delete the placeholder code and paste this:
+
+```typescript
+function main(workbook: ExcelScript.Workbook): string {
+  let sheet = workbook.getWorksheets()[0];
+  let usedRange = sheet.getUsedRange();
+  let table = sheet.addTable(usedRange, true); // true = first row is headers
+  table.setName("IncidentsTable");
+  return table.getName();
+}
+```
+
+4. Rename the script (top-left) to something like **"CreateIncidentsTable"**.
+5. Click **Save**.
+
+This script takes whatever raw data is in the first worksheet, wraps it into a real Excel Table named `IncidentsTable`, and returns that name.
+
+### Step C: Configure "Run script" in your flow
+
+- **Location / Document Library:** same as your "Create file" step
+- **File:** `outputs('Create_file')?['body/Id']` (same dynamic file reference you used for List rows)
+- **Script:** select **CreateIncidentsTable** from the dropdown
+
+### Step D: Now configure "List rows present in a table"
+
+- **File:** same file (`outputs('Create_file')?['body/Id']`)
+- **Table:** click into the field → choose **"Enter custom value"** → type exactly:
+  ```
+  IncidentsTable
+  ```
+
+Since the script just created a table with that exact name in that exact file, it'll now be readable.
+
+## One thing to verify first
+
+Before wiring this up, open the actual **raw attachment** ServiceNow sends (not your manually-maintained tracking sheet) and check:
+- Does the data start cleanly at cell A1 with headers in row 1?
+- Is it a single clean block (no blank rows or repeated headers in the middle), like your columns Number/Assignment group/Short Description/State/Service item (SI)?
+
+If yes, `getUsedRange()` will work perfectly. If the raw attachment has quirks (multiple stacked tables, blank separator rows, etc. — like what showed in your combined tracking file earlier), let me know exactly how it's laid out and I'll adjust the script to handle it (e.g., only grab a specific row range, or split on blank rows).
