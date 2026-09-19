@@ -173,3 +173,75 @@ Before wiring this up, open the actual **raw attachment** ServiceNow sends (not 
 - Is it a single clean block (no blank rows or repeated headers in the middle), like your columns Number/Assignment group/Short Description/State/Service item (SI)?
 
 If yes, `getUsedRange()` will work perfectly. If the raw attachment has quirks (multiple stacked tables, blank separator rows, etc. — like what showed in your combined tracking file earlier), let me know exactly how it's laid out and I'll adjust the script to handle it (e.g., only grab a specific row range, or split on blank rows).
+
+
+
+GroupedIncidents is now correct. Here's everything left to finish this flow end-to-end.
+
+## Step 11 — List rows present in a table (your Applications status sheet)
+
+Add this **after** your "Apply to each 2" loop completes.
+
+- **Location:** wherever your Applications status Excel file lives (same connection your original working flow uses)
+- **File:** select your Daily Application Status Excel file
+- **Table:** select your Applications table
+
+## Step 12 — Initialize variable
+
+- **Name:** `HTMLRows`
+- **Type:** String
+- **Value:** *(leave empty)*
+
+## Step 13 — Apply to each (loop over the Applications rows from Step 11)
+
+**From:** `value` (dynamic content from Step 11)
+
+Inside this loop, add **one action: Append to string variable** → `HTMLRows` →
+
+```
+@{concat('<tr>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',items('Apply_to_each')?['Applications'],'</td>','<td bgcolor="',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'pending'),'#FFFF00',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'failed'),'#FF0000',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'completed'),'#008000',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'in progress'),'#FFBF00','#D3D3D3')))),'" style=\"border:3px solid #000000;padding:8px;font-weight:bold;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'pending'),'background-color:#FFFF00;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'failed'),'background-color:#FF0000;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'completed'),'background-color:#008000;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'in progress'),'background-color:#FFBF00;','background-color:#D3D3D3;')))),'\">',items('Apply_to_each')?['Status'],'</td>','<td bgcolor="',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'pending'),'#FFFF00',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'failed'),'#FF0000',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'completed'),'#008000',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'in progress'),'#FFBF00','#D3D3D3')))),'" style=\"border:3px solid #000000;padding:8px;font-weight:bold;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'pending'),'background-color:#FFFF00;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'failed'),'background-color:#FF0000;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'completed'),'background-color:#008000;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'in progress'),'background-color:#FFBF00;','background-color:#D3D3D3;')))),'\">',items('Apply_to_each')?['Comments'],'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(or(empty(string(items('Apply_to_each')?['Expected Completion Time EST'])),equals(string(items('Apply_to_each')?['Expected Completion Time EST']),'NA')),'NA',string(items('Apply_to_each')?['Expected Completion Time EST'])),'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(or(empty(string(items('Apply_to_each')?['Actual Completion time'])),equals(string(items('Apply_to_each')?['Actual Completion time']),'NA')),'NA',string(items('Apply_to_each')?['Actual Completion time'])),'</td>','<td bgcolor="',if(equals(items('Apply_to_each')?['SLA'],'Met'),'#008000',if(equals(items('Apply_to_each')?['SLA'],'NA'),'#D3D3D3','#FF0000')),'" style=\"border:3px solid #000000;padding:8px;font-weight:bold;',if(equals(items('Apply_to_each')?['SLA'],'Met'),'background-color:#008000;',if(equals(items('Apply_to_each')?['SLA'],'NA'),'background-color:#D3D3D3;','background-color:#FF0000;')),'\">',items('Apply_to_each')?['SLA'],'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(empty(filter(variables('GroupedIncidents'),equals(toLower(item()?['SI']),toLower(items('Apply_to_each')?['Applications'])))),'NA',first(filter(variables('GroupedIncidents'),equals(toLower(item()?['SI']),toLower(items('Apply_to_each')?['Applications']))))?['Incidents']),'</td>','</tr>')}
+```
+
+## Step 14 — Compose Email Body
+
+```
+<html>
+<head>
+<style>
+body { font-family: Arial, sans-serif; font-size: 14px; font-weight: bold; }
+table { border-collapse: collapse; width: 100%; }
+th { background-color:#1F4E78; color: white; border: 3px solid #000000; padding: 8px; text-align: left; font-weight: bold; }
+td { border: 3px solid #000000; padding: 8px; font-weight: bold; }
+</style>
+</head>
+<body>
+<p>Hi All,</p>
+<p>Please find today's status of Applications processes:</p>
+<table>
+<tr><th>Applications</th><th>Status</th><th>Comments</th><th>Expected Completion Time EST</th><th>Actual Completion time</th><th>SLA</th><th>Incident</th></tr>
+@{variables('HTMLRows')}
+</table>
+<p>Thanks and Regards</p>
+<p>Data Engineering Team</p>
+</body>
+</html>
+```
+
+## Step 15 — Send an email (V2)
+
+- **To:** your test address (switch to real distribution list once verified)
+- **Subject:** `Data Engineer Handover : Green : @{formatDateTime(convertTimeZone(utcNow(),'UTC','India Standard Time'),'dd MMMM yyyy')}`
+- **Body:** `@{outputs('Compose_Email_Body')}` — **no `<p>` wrapper**, exactly as we fixed earlier
+
+## Step 16 — Save and test the whole thing
+
+Run **Test → Manually** from the very top. Check the received email — every Applications row should now show the correct incident number(s) in the last column, or "NA" where there's no match.
+
+## Step 17 — Once fully verified, go live
+
+1. Replace **"Manually trigger a flow"** with a **Recurrence** trigger matching your 3 AM / 3 PM / 9 PM schedule.
+2. Update the **From** in "Get emails (V3)" back to `tiaaprod@service-now.com` (you were testing with your own address).
+3. Update **Send an email (V2)**'s **To** field to the real recipient(s).
+4. **Turn off or delete your old separate working flow** so you don't get two duplicate status emails once this one goes live on the same schedule.
+
+Let me know what the test email shows once you run Step 16.
