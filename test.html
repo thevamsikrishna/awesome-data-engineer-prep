@@ -1,1 +1,117 @@
-@{concat('<tr>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',items('Apply_to_each')?['Applications'],'</td>','<td bgcolor="',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'pending'),'#FFFF00',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'failed'),'#FF0000',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'completed'),'#008000',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'in progress'),'#FFBF00','#D3D3D3')))),'" style=\"border:3px solid #000000;padding:8px;font-weight:bold;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'pending'),'background-color:#FFFF00;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'failed'),'background-color:#FF0000;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'completed'),'background-color:#008000;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'in progress'),'background-color:#FFBF00;','background-color:#D3D3D3;')))),'\">',items('Apply_to_each')?['Status'],'</td>','<td bgcolor="',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'pending'),'#FFFF00',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'failed'),'#FF0000',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'completed'),'#008000',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'in progress'),'#FFBF00','#D3D3D3')))),'" style=\"border:3px solid #000000;padding:8px;font-weight:bold;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'pending'),'background-color:#FFFF00;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'failed'),'background-color:#FF0000;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'completed'),'background-color:#008000;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'in progress'),'background-color:#FFBF00;','background-color:#D3D3D3;')))),'\">',items('Apply_to_each')?['Comments'],'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(or(empty(string(items('Apply_to_each')?['Expected Completion Time EST'])),equals(string(items('Apply_to_each')?['Expected Completion Time EST']),'NA')),'NA',string(items('Apply_to_each')?['Expected Completion Time EST'])),'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(or(empty(string(items('Apply_to_each')?['Actual Completion time'])),equals(string(items('Apply_to_each')?['Actual Completion time']),'NA')),'NA',string(items('Apply_to_each')?['Actual Completion time'])),'</td>','<td bgcolor="',if(equals(items('Apply_to_each')?['SLA'],'Met'),'#008000',if(equals(items('Apply_to_each')?['SLA'],'NA'),'#D3D3D3','#FF0000')),'" style=\"border:3px solid #000000;padding:8px;font-weight:bold;',if(equals(items('Apply_to_each')?['SLA'],'Met'),'background-color:#008000;',if(equals(items('Apply_to_each')?['SLA'],'NA'),'background-color:#D3D3D3;','background-color:#FF0000;')),'\">',items('Apply_to_each')?['SLA'],'</td>','</tr>')}
+Before I lay out the full flow changes, I need to pin down one design decision — it changes how the last part is built.
+
+Got it — simpler than I first thought: no new table, just populate the existing **Incident** column by matching SI ↔ Application. Here's the complete build, in order.
+
+## New steps to add (before your existing "Apply to each" over Applications)
+
+### 1. Get emails (V3) — fetch the latest ServiceNow mail with attachment
+- **Folder:** Inbox
+- **Search Query:** `from:<servicenow-sender-address> hasattachments:yes`
+- **Top:** 1
+- **Include Attachments:** Yes
+
+This naturally always grabs whichever ServiceNow mail (2:30 AM/PM/8:30 PM) landed most recently before your 3 AM/3 PM/9 PM run.
+
+### 2. Condition — safety check
+`length(outputs('Get_emails_(V3)')?['body/value'])` **is greater than** `0`
+
+Everything below goes in the **Yes** branch.
+
+### 3. Create file (OneDrive for Business / SharePoint)
+- **Folder Path:** wherever you want this temp file staged
+- **File Name:** `Incidents_@{utcNow('yyyyMMddHHmmss')}.xlsx`
+- **File Content:** `first(outputs('Get_emails_(V3)')?['body/value'])?['attachments'][0]?['contentBytes']`
+
+This saves ServiceNow's attachment as a real file so Excel Online can read it. Using a timestamped name avoids overwrite conflicts — old files can be cleaned up later with a separate scheduled flow if clutter becomes an issue.
+
+**Important prerequisite:** the attachment's data (Number, Assignment group, Short Description, State, Service item (SI)) needs to be a proper **Excel Table** (Ctrl+T with headers) — not just plain cells — for the next step to find it. If ServiceNow's export doesn't auto-format it as a table, this step will fail to find a table to read. Let me know if that happens and I'll give you an Office Script–based fallback that reads raw cell ranges instead.
+
+### 4. List rows present in a table
+- **Location/Document Library:** same as step 3
+- **File:** `outputs('Create_file')?['body/Id']` (dynamic content — the ID of the file you just created)
+- **Table:** select the table name from the dropdown
+
+### 5. Select — shape and strip metadata
+**From:** `body('List_rows_present_in_a_table_2')?['value']`
+**Map:**
+- `Number`: `item()?['Number']`
+- `SI`: `item()?['Service item (SI)']`
+
+(This strips Excel's internal row metadata, which is necessary for the dedupe trick in the next step to actually work.)
+
+### 6. Compose — "DistinctIncidents" (dedupe exact duplicate rows)
+```
+union(body('Select'), body('Select'))
+```
+This collapses your duplicate `INC9062894` rows into one.
+
+### 7. Select — "SIListRaw" (pull just the SI values)
+**From:** `outputs('DistinctIncidents')`
+**Map:** `item()?['SI']`
+
+### 8. Compose — "DistinctSI" (unique list of SI values)
+```
+union(body('SIListRaw'), body('SIListRaw'))
+```
+
+### 9. Initialize variable — "GroupedIncidents"
+- **Type:** Array
+- **Value:** `[]`
+
+### 10. Apply to each — loop over `outputs('DistinctSI')`
+
+Inside this loop:
+
+**10a. Filter array**
+- **From:** `outputs('DistinctIncidents')`
+- **Condition:** `item()?['SI']` **is equal to** `items('Apply_to_each_2')` *(this inner loop's current item)*
+
+**10b. Select — "NumbersOnly"**
+- **From:** `body('Filter_array')`
+- **Map:** `item()?['Number']`
+
+**10c. Compose — "JoinedNumbers"**
+```
+join(body('NumbersOnly'), ', ')
+```
+
+**10d. Append to array variable — GroupedIncidents**
+```
+{
+  "SI": items('Apply_to_each_2'),
+  "Incidents": outputs('JoinedNumbers')
+}
+```
+
+---
+
+## Update your existing Compose Email Body — add the header
+
+Find:
+```
+<th>Actual Completion time</th><th>SLA</th></tr>
+```
+Change to:
+```
+<th>Actual Completion time</th><th>SLA</th><th>Incident</th></tr>
+```
+
+## Update your Append to string variable — add the Incident cell
+
+Add this right before the final `'</tr>')}` in your existing concat, after the SLA `</td>`:
+
+```
+,'<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(empty(filter(variables('GroupedIncidents'),equals(toLower(item()?['SI']),toLower(items('Apply_to_each')?['Applications'])))),'NA',first(filter(variables('GroupedIncidents'),equals(toLower(item()?['SI']),toLower(items('Apply_to_each')?['Applications']))))?['Incidents']),'</td>','</tr>')}
+```
+
+**Full corrected concat statement (complete, ready to paste):**
+
+```
+@{concat('<tr>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',items('Apply_to_each')?['Applications'],'</td>','<td bgcolor="',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'pending'),'#FFFF00',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'failed'),'#FF0000',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'completed'),'#008000',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'in progress'),'#FFBF00','#D3D3D3')))),'" style=\"border:3px solid #000000;padding:8px;font-weight:bold;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'pending'),'background-color:#FFFF00;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'failed'),'background-color:#FF0000;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'completed'),'background-color:#008000;',if(contains(toLower(string(items('Apply_to_each')?['Status'])),'in progress'),'background-color:#FFBF00;','background-color:#D3D3D3;')))),'\">',items('Apply_to_each')?['Status'],'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',items('Apply_to_each')?['Comments'],'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(or(empty(string(items('Apply_to_each')?['Expected Completion Time EST'])),equals(string(items('Apply_to_each')?['Expected Completion Time EST']),'NA')),'NA',string(items('Apply_to_each')?['Expected Completion Time EST'])),'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(or(empty(string(items('Apply_to_each')?['Actual Completion time'])),equals(string(items('Apply_to_each')?['Actual Completion time']),'NA')),'NA',string(items('Apply_to_each')?['Actual Completion time'])),'</td>','<td bgcolor="',if(equals(items('Apply_to_each')?['SLA'],'Met'),'#008000',if(equals(items('Apply_to_each')?['SLA'],'NA'),'#D3D3D3','#FF0000')),'" style=\"border:3px solid #000000;padding:8px;font-weight:bold;',if(equals(items('Apply_to_each')?['SLA'],'Met'),'background-color:#008000;',if(equals(items('Apply_to_each')?['SLA'],'NA'),'background-color:#D3D3D3;','background-color:#FF0000;')),'\">',items('Apply_to_each')?['SLA'],'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(empty(filter(variables('GroupedIncidents'),equals(toLower(item()?['SI']),toLower(items('Apply_to_each')?['Applications'])))),'NA',first(filter(variables('GroupedIncidents'),equals(toLower(item()?['SI']),toLower(items('Apply_to_each')?['Applications']))))?['Incidents']),'</td>','</tr>')}
+```
+
+## What this gives you
+
+For each Application row, it looks up whether any incident's **Service item (SI)** (case-insensitive) matches that **Applications** name. If yes, it lists all deduplicated incident numbers for that SI, comma-separated (e.g., `INC9062894, INC9061550` if an app happened to have two). If no match, it shows `NA`.
+
+Let me know once you've added these steps and tell me if the "List rows present in a table" step finds a table in the attachment — if it errors out saying no table found, that confirms we need the Office Script fallback for reading raw cell ranges instead.
