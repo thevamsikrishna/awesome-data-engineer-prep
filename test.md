@@ -38,3 +38,8 @@ outputs('Get_attachment_(V2)')?['body/contentBytes']
 ## Save and test
 
 Run the flow again → check **Create file**'s output — `Size` should now show `4320` (matching the actual attachment size) instead of `4`. Then check **create table** and **List rows** — they should now succeed since there's real file data to work with.
+
+
+Subject: @{triggerOutputs()?['body/subject']}
+Preview: @{triggerOutputs()?['body/bodyPreview']}
+Received: @{formatDateTime(triggerOutputs()?['body/receivedDateTime'], 'dd-MM-yyyy hh:mm tt')}
