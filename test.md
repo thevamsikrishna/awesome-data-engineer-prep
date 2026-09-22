@@ -1,40 +1,40 @@
-Copilot's right about the root cause (though the fix is simpler than it suggests) — `filter()` can behave inconsistently when nested inside another loop's expression context in some Power Automate runtime versions. The reliable fix is to add an actual **Filter array** action inside your loop instead of calling `filter()` inline.
+Now I can see clearly — that giant base64-looking string wasn't the attachment content at all. It was the **email message's own ID** (Graph message IDs are long base64-style strings ending in `==`, easy to mistake for file content). Looking at the actual `attachments` array for this email, it only contains:
 
-## Step 1 — Add a new "Filter array" action
+```json
+{
+  "@odata.type": "#microsoft.graph.fileAttachment",
+  "id": "AAMkAGVlMDRiOWNiLTkyZWItNDhmNC04Y2QxLWFjNGI...",
+  "lastModifiedDateTime": "2026-09-22T12:13:05+00:00",
+  "name": "Daily Incident DE.xlsx",
+  "contentType": "application/xlsx",
+  "size": 4320,
+  "isInline": false
+}
+```
 
-Inside your **main "Apply to each"** (the one looping over Applications, right **before** "Append to string variable"), add:
+**No `contentBytes` field at all.** It's a real `fileAttachment` (not a reference/link — good), but `Get emails (V3)` simply isn't returning the actual file bytes here, only metadata. This is exactly the same underlying issue we hit earlier with your test email, and the same fix applies.
 
-1. **+ New step** (inside the loop) → search **"Filter array"** → add it.
-2. To avoid confusion with your earlier "Filter array" (used in the incident-grouping loop), rename this one — click the action title and rename to: **FilterBySI**
+## Fix — add "Get attachment (V2)" using this attachment's real ID
 
-## Step 2 — Configure it
+### Step 1: Add the action
+Insert between **Get emails (V3)** and **Create file**:
+1. **+ New step** → search **"Get attachment (V2)"** (Office 365 Outlook connector).
 
-- **From:** `variables('GroupedIncidents')`
-- Switch the condition area to **advanced mode** (there's a small link/icon "Switch to text mode" or "Edit in advanced mode" next to the condition boxes) and paste:
+### Step 2: Configure it
+- **Message Id:**
   ```
-  @equals(toLower(coalesce(item()?['SI'], '')), toLower(coalesce(items('Apply_to_each')?['Applications'], '')))
+  first(outputs('Get_emails_(V3)')?['body/value'])?['id']
+  ```
+- **Attachment Id:**
+  ```
+  first(outputs('Get_emails_(V3)')?['body/value'])?['attachments'][0]?['id']
   ```
 
-## Step 3 — Update your concat expression
-
-Replace this part of your existing expression:
+### Step 3: Update "Create file"'s File Content field to:
 ```
-if(empty(filter(variables('GroupedIncidents'),equals(toLower(coalesce(item()?['SI'],'')),toLower(coalesce(items('Apply_to_each')?['Applications'],''))))),'NA',first(filter(variables('GroupedIncidents'),equals(toLower(coalesce(item()?['SI'],'')),toLower(coalesce(items('Apply_to_each')?['Applications'],'')))))?['Incidents'])
+outputs('Get_attachment_(V2)')?['body/contentBytes']
 ```
 
-With this (much shorter, references the new Filter array action instead):
-```
-if(empty(body('FilterBySI')),'NA',first(body('FilterBySI'))?['Incidents'])
-```
+## Save and test
 
-## Full corrected concat statement (ready to paste)
-
-```
-@{concat('<tr>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',items('Apply_to_each')?['Applications'],'</td>','<td bgcolor="',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'pending'),'#FFF2B2',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'failed'),'#E9A6A0',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'completed'),'#B7D7A8',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'in progress'),'#F3D08A','#D9D9D9')))),'" style=\"border:3px solid #000000;padding:8px;font-weight:bold;',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'pending'),'background-color:#FFF2B2;',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'failed'),'background-color:#E9A6A0;',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'completed'),'background-color:#B7D7A8;',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'in progress'),'background-color:#F3D08A;','background-color:#D9D9D9;')))),'\">',items('Apply_to_each')?['Status'],'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',items('Apply_to_each')?['Comments'],'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(or(empty(string(items('Apply_to_each')?['Expected Completion Time EST'])),equals(string(items('Apply_to_each')?['Expected Completion Time EST']),'NA')),'NA',string(items('Apply_to_each')?['Expected Completion Time EST'])),'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(or(empty(string(items('Apply_to_each')?['Actual Completion time'])),equals(string(items('Apply_to_each')?['Actual Completion time']),'NA')),'NA',string(items('Apply_to_each')?['Actual Completion time'])),'</td>','<td bgcolor="',if(equals(items('Apply_to_each')?['SLA'],'Met'),'#B7D7A8',if(equals(items('Apply_to_each')?['SLA'],'NA'),'#E6E6E6','#E9A6A0')),'" style=\"border:3px solid #000000;padding:8px;font-weight:bold;',if(equals(items('Apply_to_each')?['SLA'],'Met'),'background-color:#B7D7A8;',if(equals(items('Apply_to_each')?['SLA'],'NA'),'background-color:#E6E6E6;','background-color:#E9A6A0;')),'\">',items('Apply_to_each')?['SLA'],'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(empty(body('FilterBySI')),'NA',first(body('FilterBySI'))?['Incidents']),'</td>','</tr>')}
-```
-
-## Order inside your main "Apply to each" loop should now be:
-1. **FilterBySI** (Filter array)
-2. **Append to string variable** (the expression above)
-
-Save, test, and this should finally resolve it since it avoids the inline `filter()` reliability issue entirely.
+Run the flow again → check **Create file**'s output — `Size` should now show `4320` (matching the actual attachment size) instead of `4`. Then check **create table** and **List rows** — they should now succeed since there's real file data to work with.
