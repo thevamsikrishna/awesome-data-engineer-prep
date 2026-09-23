@@ -1,45 +1,14 @@
-Now I can see clearly — that giant base64-looking string wasn't the attachment content at all. It was the **email message's own ID** (Graph message IDs are long base64-style strings ending in `==`, easy to mistake for file content). Looking at the actual `attachments` array for this email, it only contains:
+Here's the corrected expression with both changes: "Pending" → "Yet to Start", and Incident defaults to blank when Status is "NA" or "Yet to Start" (regardless of what the incident lookup finds).
 
-```json
-{
-  "@odata.type": "#microsoft.graph.fileAttachment",
-  "id": "AAMkAGVlMDRiOWNiLTkyZWItNDhmNC04Y2QxLWFjNGI...",
-  "lastModifiedDateTime": "2026-09-22T12:13:05+00:00",
-  "name": "Daily Incident DE.xlsx",
-  "contentType": "application/xlsx",
-  "size": 4320,
-  "isInline": false
-}
+## Full corrected expression
+
+```
+@{concat('<tr>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',items('Apply_to_each')?['Applications'],'</td>','<td bgcolor="',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'yet to start'),'#FFF2B2',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'failed'),'#E9A6A0',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'completed'),'#B7D7A8',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'in progress'),'#F3D08A','#D9D9D9')))),'" style=\"border:3px solid #000000;padding:8px;font-weight:bold;',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'yet to start'),'background-color:#FFF2B2;',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'failed'),'background-color:#E9A6A0;',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'completed'),'background-color:#B7D7A8;',if(contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'in progress'),'background-color:#F3D08A;','background-color:#D9D9D9;')))),'\">',items('Apply_to_each')?['Status'],'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',items('Apply_to_each')?['Comments'],'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(or(empty(string(items('Apply_to_each')?['Expected Completion Time EST'])),equals(string(items('Apply_to_each')?['Expected Completion Time EST']),'NA')),'NA',string(items('Apply_to_each')?['Expected Completion Time EST'])),'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(or(empty(string(items('Apply_to_each')?['Actual Completion time'])),equals(string(items('Apply_to_each')?['Actual Completion time']),'NA')),'NA',string(items('Apply_to_each')?['Actual Completion time'])),'</td>','<td bgcolor="',if(equals(items('Apply_to_each')?['SLA'],'Met'),'#B7D7A8',if(equals(items('Apply_to_each')?['SLA'],'NA'),'#E6E6E6','#E9A6A0')),'" style=\"border:3px solid #000000;padding:8px;font-weight:bold;',if(equals(items('Apply_to_each')?['SLA'],'Met'),'background-color:#B7D7A8;',if(equals(items('Apply_to_each')?['SLA'],'NA'),'background-color:#E6E6E6;','background-color:#E9A6A0;')),'\">',items('Apply_to_each')?['SLA'],'</td>','<td style=\"border:3px solid #000000;padding:8px;font-weight:bold;\">',if(or(equals(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'na'),contains(toLower(coalesce(items('Apply_to_each')?['Status'],'')),'yet to start')),'NA',if(empty(body('FilterBySI')),'NA',first(body('FilterBySI'))?['Incidents'])),'</td>','</tr>')}
 ```
 
-**No `contentBytes` field at all.** It's a real `fileAttachment` (not a reference/link — good), but `Get emails (V3)` simply isn't returning the actual file bytes here, only metadata. This is exactly the same underlying issue we hit earlier with your test email, and the same fix applies.
+## What changed
 
-## Fix — add "Get attachment (V2)" using this attachment's real ID
+1. **Status keyword**: every place that checked for `'pending'` now checks for `'yet to start'` — same color (`#FFF2B2`), just matching the new status text.
+2. **Incident column logic**: now checks Status *first* — if it's `NA` or contains `Yet to Start`, the Incident cell is forced to `'NA'` immediately, without even looking at `FilterBySI`. Only when Status is something else (Failed, Completed, In Progress) does it fall through to the actual incident lookup.
 
-### Step 1: Add the action
-Insert between **Get emails (V3)** and **Create file**:
-1. **+ New step** → search **"Get attachment (V2)"** (Office 365 Outlook connector).
-
-### Step 2: Configure it
-- **Message Id:**
-  ```
-  first(outputs('Get_emails_(V3)')?['body/value'])?['id']
-  ```
-- **Attachment Id:**
-  ```
-  first(outputs('Get_emails_(V3)')?['body/value'])?['attachments'][0]?['id']
-  ```
-
-### Step 3: Update "Create file"'s File Content field to:
-```
-outputs('Get_attachment_(V2)')?['body/contentBytes']
-```
-
-## Save and test
-
-Run the flow again → check **Create file**'s output — `Size` should now show `4320` (matching the actual attachment size) instead of `4`. Then check **create table** and **List rows** — they should now succeed since there's real file data to work with.
-
-
-Subject: @{triggerOutputs()?['body/subject']}
-Preview: @{triggerOutputs()?['body/bodyPreview']}
-Received: @{formatDateTime(triggerOutputs()?['body/receivedDateTime'], 'dd-MM-yyyy hh:mm tt')}
+Update your **Append to string variable** step with this full expression, save, and test.
