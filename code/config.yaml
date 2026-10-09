@@ -1,0 +1,58 @@
+timezone: Asia/Kolkata
+
+starburst:
+  host: your-cluster.trino.galaxy.starburst.io   # or your SEP coordinator host
+  port: 443
+  http_scheme: https
+  user: svc_refresh_report@yourco.com             # use a service account
+  password_env: STARBURST_PASSWORD                # password read from env var
+  verify_ssl: true
+
+email:
+  smtp_host: smtp.office365.com                   # or smtp.gmail.com / internal relay
+  smtp_port: 587
+  starttls: true
+  smtp_user: svc_refresh_report@yourco.com
+  password_env: SMTP_PASSWORD
+  from: svc_refresh_report@yourco.com
+  to: [team-dl@yourco.com]
+  cc: []
+  subject: Starburst Last Refresh Report
+
+# One entry per table/view you check manually today.
+# max_age_hours: older than this => flagged STALE (red) in the mail.
+objects:
+  - label: Sales MV
+    method: materialized_view
+    catalog: iceberg
+    schema: reporting
+    table: mv_daily_sales
+    max_age_hours: 24
+
+  - label: Orders (Iceberg)
+    method: iceberg
+    catalog: iceberg
+    schema: curated
+    table: orders
+    max_age_hours: 24
+
+  - label: Customers (Delta)
+    method: delta
+    catalog: delta
+    schema: curated
+    table: customers
+    max_age_hours: 24
+
+  - label: Payments (load_ts column)
+    method: column
+    catalog: hive
+    schema: raw
+    table: payments
+    column: load_ts
+    max_age_hours: 26
+
+  # If you already have a SQL you run manually, just paste it here:
+  - label: Custom check
+    method: query
+    sql: SELECT max(updated_at) FROM hive.audit.pipeline_runs WHERE status = 'SUCCESS'
+    max_age_hours: 24
